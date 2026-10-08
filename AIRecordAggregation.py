@@ -31,7 +31,7 @@ async def get_page(client, url, sem):
   return response
 
 
-def get_last_page(url):
+def get_last_page(url) -> int:
   """Scrape the forum index page to find the total number of pages."""
   body = requests.get(url)
   soup = bs4.BeautifulSoup(body.text, 'html.parser')
@@ -42,7 +42,7 @@ def get_last_page(url):
 
 
 # Determine total page count before scraping
-pageNum = get_last_page(AI)
+
 
 @dataclass
 class data:
@@ -61,7 +61,7 @@ async def scrape_pages(id='7852401') -> data:
   datelist_unix = []       # post timestamps as Python datetime objects
   postlist = []            # reply counts per thread
 
-  async def parse_page(page, pages):
+  async def parse_page(page, pages) -> None:
     """Extract thread dates, authors, and post counts from a single forum page."""
     soup = bs4.BeautifulSoup(page.text, 'html.parser')
     main_content = soup.find('div', id='page-content')
@@ -78,7 +78,9 @@ async def scrape_pages(id='7852401') -> data:
 
       # Author name lives in the second <a> inside the printuser span
       author = row.find('td', class_='started').find('span', class_='printuser').find_all('a')  # type: ignore
-      author = author[1].text
+      
+      author = author[1].text if author else '(account deleted)'
+      
       authorlist.append(author)
 
       # Post count for this thread
@@ -88,7 +90,7 @@ async def scrape_pages(id='7852401') -> data:
     rowlist.append(rows)
     print(f"Page {pages.index(page)+1} done.")
 
-  
+  pageNum = get_last_page(f'https://05command.wikidot.com/forum/c-{id}/p/1')
   urls = [f'https://05command.wikidot.com/forum/c-{id}/p/{x}' for x in range(1, pageNum + 1)]
   sem = asyncio.Semaphore(7)  # cap at 7 simultaneous requests — wikidot drops TLS handshakes beyond this
   async with httpx.AsyncClient() as client:
@@ -99,7 +101,7 @@ async def scrape_pages(id='7852401') -> data:
     return data(rowlist,authorlist,datelist_unix,postlist)
 
 
-aipages = asyncio.run(scrape_pages())
+aipages = asyncio.run(scrape_pages()) #82386 disc #798754 non disc #7852401 AI
 # print(datelist_unix)
 print()
 # print(authorlist)
@@ -125,9 +127,9 @@ print(unique_authors)
 print(unique_months)
 for month in unique_months[0]:
   print(month.strftime("%b %Y"))
-
+monthsPerLine = 3
 # --- Figure 1: Thread count over time (by month) ---
-plt.figure(1, figsize=(15, 5))
+plt.figure(1, figsize=(max(10,(len(unique_months[0])*0.4)/monthsPerLine), 5)) #dynamic width
 
 #trend line stuff
 coefficients = np.polyfit(mdates.date2num(unique_months[0]), unique_months[1], 1)
@@ -137,41 +139,59 @@ plt.plot(unique_months[0], trendline_values, linestyle="--", color='#cfcfcf',lin
 
 #dates
 dates = plt.plot(unique_months[0], unique_months[1], label="AI records")
+
 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))  # human-readable month labels
-plt.gca().xaxis.set_major_locator(mdates.MonthLocator(interval=1))  # tick every 1 months
+plt.gca().xaxis.set_major_locator(mdates.MonthLocator(interval=monthsPerLine))  # tick every 3 months
 plt.gcf().autofmt_xdate()  # rotate labels to prevent overlap
 
 
 # Mark when the AI ban became permanent
 plt.axvline(x=dt(2025, 10, 1), color='r', linestyle='--', label="AI is now Perma")  # type: ignore
+
 plt.legend()
 plt.grid()
+plt.tight_layout()
 plt.savefig('graph.png', dpi=300)
 print("file saved as graph.png")
 
 # --- Figure 2: Pie chart of threads per author ---
-plt.figure(2, figsize=(10, 5))
+plt.figure(2, figsize=(10, 10))
 other_count = 0
 
 # Build a list of [author, count] pairs
 unique_authors_trimmed = np.vstack((unique_authors[0], unique_authors[1])).T.tolist()
 # unique_authors_trimmed = [list(x) for x in  list(zip(unique_authors[0],unique_authors[1]))]
 
-# Lump authors with 10 or fewer threads into an "Other" slice
-other_count = sum(int(count) for author, count in unique_authors_trimmed if int(count) <= 10)
-unique_authors_trimmed = [[author, count] for author, count in unique_authors_trimmed if int(count) > 10]
-unique_authors_trimmed.append(["Other", other_count])
+# Group every author with less than 1.5% of all threads into "Other".
+all_authors = [[author, int(count)] for author, count in unique_authors_trimmed]
+total_threads = sum(count for author, count in all_authors)
+unique_authors_trimmed = [
+  [author, count]
+  for author, count in all_authors
+  if count / total_threads > 0.01
+]
+other_count = sum(
+  count for author, count in all_authors
+  if count / total_threads <= 0.01
+)
+
+if other_count:
+  unique_authors_trimmed.append(["Other", other_count])
 
 print()
 print(unique_authors_trimmed)
 plt.pie(
   [x[1] for x in unique_authors_trimmed],
-  labels=[x[0] for x in unique_authors_trimmed],
+  labels=[x[0] for x in unique_authors_trimmed], #type: ignore
   autopct='%1.1f%%',
-  radius=1.5,
-  pctdistance=0.7
+  radius=0.85,
+  pctdistance=1.1,
+  labeldistance=0.6,
+  rotatelabels=True
 )
-plt.savefig('pie.png', dpi=300)
+plt.axis('equal')  
+plt.tight_layout()  
+plt.savefig('pie.png', dpi=300,bbox_inches='tight')
 print('flie saved as pie.png')
 
 # --- Figure 3: Thread activity by hour of day (UTC) ---
