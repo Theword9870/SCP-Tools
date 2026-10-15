@@ -38,7 +38,9 @@ def get_last_page(url) -> int:
   lastpage = soup.find('div', class_='pager')
   lastpage = lastpage.find('span', class_='pager-no').text.strip()  # type: ignore
   # Text looks like "page 1 of 42" — strip prefix to get the count
-  return int(lastpage.strip('page 1 of '))
+  print(lastpage)
+  print(re.sub(r"page 1 of ",'',str(lastpage)))
+  return int(re.sub(r"page 1 of ",'',str(lastpage)))
 
 
 # Determine total page count before scraping
@@ -62,7 +64,7 @@ async def scrape_pages(id='7852401') -> data:
   postlist = []            # reply counts per thread
 
   async def parse_page(page, pages) -> None:
-    """Extract thread dates, authors, and post counts from a single forum page."""
+    """Extract thread dates, authors, and post counts from a single forum page. CHANGES NON LOCAL VARS"""
     soup = bs4.BeautifulSoup(page.text, 'html.parser')
     main_content = soup.find('div', id='page-content')
     table = main_content.find('table')  # type: ignore
@@ -73,13 +75,17 @@ async def scrape_pages(id='7852401') -> data:
       # datelist.append(dates)
       # The odate span encodes the Unix timestamp in its second CSS class, e.g. "time_1234567890"
       datelist_unix.append(
-        dt.fromtimestamp(int(row.find('span', class_='odate').get('class')[1].strip("time_")))  # type: ignore
+        dt.fromtimestamp(int(
+            row.find('span', class_='odate')
+              .get('class')[1] # type: ignore
+              .strip("time_")
+          ))
       )
 
       # Author name lives in the second <a> inside the printuser span
       author = row.find('td', class_='started').find('span', class_='printuser').find_all('a')  # type: ignore
       
-      author = author[1].text if author else '(account deleted)'
+      author = author[1].text if author else '(account deleted)' #fix for deleted acc
       
       authorlist.append(author)
 
@@ -100,45 +106,117 @@ async def scrape_pages(id='7852401') -> data:
     await asyncio.gather(*tasks)           # parse all pages in parallel
     return data(rowlist,authorlist,datelist_unix,postlist)
 
+async def triple_run():
+  tasks = [scrape_pages(id='7852401'), #AI
+           scrape_pages(id='82386'), #disc
+           scrape_pages(id='798754') #non disc
+          ]
+  results = await asyncio.gather(*tasks)
+  return results
+  
+aipages,discpages,ndiscpages = asyncio.run(triple_run()) #82386 disc #798754 non disc #7852401 AI
 
-aipages = asyncio.run(scrape_pages()) #82386 disc #798754 non disc #7852401 AI
 # print(datelist_unix)
 print()
 # print(authorlist)
 # all_dates = np.array([dt.strptime(x, r'%d %b %Y %H:%M') for x in datelist]) #convert to datetime
 # Convert collected lists to numpy arrays for easier manipulation
-all_dates = np.array(aipages.datelist_unix)
-all_authors = np.array(aipages.authorlist)
+@dataclass
+class pagedataarray:
+  all_dates: np.ndarray
+  all_authors: np.ndarray
+  date_author: np.ndarray
+  unique_months: np.ndarray | tuple[np.ndarray,np.ndarray]
+  unique_authors: np.ndarray | tuple[np.ndarray,np.ndarray]
 
-# Pair each post date with its author, then sort chronologically
-date_author = np.stack((all_dates, all_authors), axis=1)
-date_author = date_author[date_author[:, 0].argsort()]
+def arrayify(pagedata: data) -> pagedataarray:
+  all_dates = np.array(pagedata.datelist_unix)
+  all_authors = np.array(pagedata.authorlist)
+  
+  # Pair each post date with its author, then sort chronologically
+  date_author = np.stack((all_dates, all_authors), axis=1)
+  date_author = date_author[date_author[:, 0].argsort()]
+  
+  # Collapse each date to the first of its month to bucket threads by month
+  unique_months = np.unique(
+    np.array(
+      [
+        x.replace(
+        hour=0, 
+        minute=0, 
+        second=0, 
+        microsecond=0, 
+        day=1
+      ) 
+       for x in all_dates.copy()
+      ]
+    ),
+    return_counts=True
+  )
+  
+  # Count threads per author
+  unique_authors = np.unique(all_authors, return_counts=True)
+  
+  print(unique_authors)
+  print(unique_months)
+  for month in unique_months[0]:
+    print(month.strftime("%b %Y"))
+  
+  return pagedataarray(
+    all_dates,
+    all_authors,
+    date_author,
+    unique_months,
+    unique_authors)
 
-# Collapse each date to the first of its month to bucket threads by month
-unique_months = np.unique(
-  np.array([x.replace(hour=0, minute=0, second=0, microsecond=0, day=1) for x in all_dates.copy()]),
-  return_counts=True
-)
-
-# Count threads per author
-unique_authors = np.unique(all_authors, return_counts=True)
-
-print(unique_authors)
-print(unique_months)
-for month in unique_months[0]:
-  print(month.strftime("%b %Y"))
 monthsPerLine = 3
+
+ai = arrayify(aipages)
+disc = arrayify(discpages)
+ndisc = arrayify(ndiscpages)
 # --- Figure 1: Thread count over time (by month) ---
-plt.figure(1, figsize=(max(10,(len(unique_months[0])*0.4)/monthsPerLine), 5)) #dynamic width
+plt.figure(1, 
+           figsize=(
+             max(10,(len(disc.unique_months[0])*0.4)/monthsPerLine),
+           5)) #dynamic width
 
 #trend line stuff
-coefficients = np.polyfit(mdates.date2num(unique_months[0]), unique_months[1], 1)
+coefficients = np.polyfit(
+  mdates.date2num(ai.unique_months[0]),
+  ai.unique_months[1], 1)
 polynomial = np.poly1d(coefficients)
-trendline_values = polynomial(mdates.date2num(unique_months[0]))
-plt.plot(unique_months[0], trendline_values, linestyle="--", color='#cfcfcf',linewidth=2, label="Trend Line")
+trendline_values = polynomial(mdates.date2num(ai.unique_months[0]))
+
+# plt.plot(
+#   ai.unique_months[0], 
+#   trendline_values, 
+#   linestyle="--", 
+#   color='#cfcfcf',
+#   linewidth=2, 
+#   label="Trend Line"
+# )
 
 #dates
-dates = plt.plot(unique_months[0], unique_months[1], label="AI records")
+dates = plt.plot(
+  ai.unique_months[0], 
+  ai.unique_months[1], 
+  label="AI records",
+  color='b'
+)
+
+plt.plot(
+  disc.unique_months[0],
+  disc.unique_months[1],
+  label="Disc records",
+  color='orange'
+)
+
+plt.plot(
+  ndisc.unique_months[0],
+  ndisc.unique_months[1],
+  label="Non-Disc",
+  color='purple'
+)
 
 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))  # human-readable month labels
 plt.gca().xaxis.set_major_locator(mdates.MonthLocator(interval=monthsPerLine))  # tick every 3 months
@@ -146,7 +224,11 @@ plt.gcf().autofmt_xdate()  # rotate labels to prevent overlap
 
 
 # Mark when the AI ban became permanent
-plt.axvline(x=dt(2025, 10, 1), color='r', linestyle='--', label="AI is now Perma")  # type: ignore
+# plt.axvline(
+#   x=dt(2025, 10, 1), # type: ignore
+#   color='r', 
+#   linestyle='--', 
+#   label="AI is now Perma")  
 
 plt.legend()
 plt.grid()
@@ -159,17 +241,26 @@ plt.figure(2, figsize=(10, 10))
 other_count = 0
 
 # Build a list of [author, count] pairs
-unique_authors_trimmed = np.vstack((unique_authors[0], unique_authors[1])).T.tolist()
+unique_authors_trimmed = np.vstack(
+  (ai.unique_authors[0],
+   ai.unique_authors[1])
+).T.tolist()
 # unique_authors_trimmed = [list(x) for x in  list(zip(unique_authors[0],unique_authors[1]))]
 
 # Group every author with less than 1.5% of all threads into "Other".
-all_authors = [[author, int(count)] for author, count in unique_authors_trimmed]
+all_authors = [
+  [author, int(count)] 
+  for author, count in unique_authors_trimmed
+]
+
 total_threads = sum(count for author, count in all_authors)
+
 unique_authors_trimmed = [
   [author, count]
   for author, count in all_authors
   if count / total_threads > 0.01
 ]
+
 other_count = sum(
   count for author, count in all_authors
   if count / total_threads <= 0.01
@@ -189,6 +280,7 @@ plt.pie(
   labeldistance=0.6,
   rotatelabels=True
 )
+
 plt.axis('equal')  
 plt.tight_layout()  
 plt.savefig('pie.png', dpi=300,bbox_inches='tight')
@@ -197,7 +289,12 @@ print('flie saved as pie.png')
 # --- Figure 3: Thread activity by hour of day (UTC) ---
 # Normalise every timestamp to the same dummy date so hours are comparable
 hours = np.unique(
-  np.array([x.replace(year=2000, month=1, day=1, minute=0, second=0) for x in all_dates.copy()]),
+  np.array(
+    [
+      x.replace(year=2000, month=1, day=1, minute=0, second=0) 
+      for x in ai.all_dates.copy()
+    ]
+  ),
   return_counts=True
 )
 hours = np.vstack((hours[0], hours[1])).T
@@ -241,6 +338,8 @@ adj_unique_posts = [
 
 print(adj_unique_posts)
 plt.figure(4, figsize=(7, 7))
-plt.bar([x[0] for x in adj_unique_posts], [x[1] for x in adj_unique_posts])
+plt.bar(
+  [x[0] for x in adj_unique_posts],
+  [x[1] for x in adj_unique_posts])
 plt.savefig('posts.png', dpi=300)
 print("\n\n\ndone")
