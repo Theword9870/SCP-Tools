@@ -46,7 +46,7 @@ Makes 4 files
 * hours.png
 * posts.png
 
-graph.png is a graphing of AI records over time, per month
+graph.png is a graphing of all records over time (AI, DISC, NON-DISC)
 
 pie.png is a graphing of authors of AI record posts
 
